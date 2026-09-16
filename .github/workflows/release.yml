@@ -48,7 +48,7 @@ jobs:
       - name: Install Linux packaging tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev fakeroot patchelf desktop-file-utils libgl1-mesa-glx libegl1-mesa libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-randr0 libxcb-image0 libxcb-icccm4 libxcb-keysyms1 libxcb-render-util0
+          sudo apt-get install -y dpkg-dev fakeroot patchelf desktop-file-utils libgl1 libegl1 libxcb-xinerama0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-randr0 libxcb-image0 libxcb-icccm4 libxcb-keysyms1 libxcb-render-util0
           # Download linuxdeploy and appimagetool
           wget -c https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy.AppImage
           wget -c https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool.AppImage
@@ -72,7 +72,7 @@ jobs:
           # We need a .desktop file for linuxdeploy. build.py creates one for the .deb,
           # let's copy it or create a similar one for the AppImage.
           # Assuming build.py created 'dist/repo-save-manager_VERSION_ARCH/usr/share/applications/repo-save-manager.desktop'
-          # and an icon 'dist/repo-save-manager_VERSION_ARCH/usr/share/icons/hicolor/128x128/apps/repo-save-manager.png'
+          # and an icon 'dist/repo-save-manager_VERSION_ARCH/usr/share/icons/hicolor/256x256/apps/repo-save-manager.png'
           # This part is tricky as build.py's .deb paths are internal to the .deb staging dir.
 
           # Let's create a minimal .desktop file for AppImage specifically
@@ -80,7 +80,7 @@ jobs:
           LOWER_APP_NAME="repo-save-manager"
           APPDIR_PATH="AppDir" # linuxdeploy default output
           mkdir -p "${APPDIR_PATH}/usr/share/applications/"
-          mkdir -p "${APPDIR_PATH}/usr/share/icons/hicolor/128x128/apps/"
+          mkdir -p "${APPDIR_PATH}/usr/share/icons/hicolor/256x256/apps/"
 
           # Create .desktop file for AppImage
           cat <<EOF > "${APPDIR_PATH}/usr/share/applications/${LOWER_APP_NAME}.desktop"
@@ -88,7 +88,7 @@ jobs:
           Version=1.0
           Name=${APP_NAME}
           Comment=Manage repository saves
-          Exec=AppRun # This will point to the script linuxdeploy creates
+          Exec=AppRun
           Icon=${LOWER_APP_NAME}
           Terminal=false
           Type=Application
@@ -97,14 +97,12 @@ jobs:
 
           # Copy icon (try reburger.png, then reburger.ico)
           ICON_SOURCE=""
-          if [ -f "reburger.png" ]; then
-            ICON_SOURCE="reburger.png"
-          elif [ -f "reburger.ico" ]; then
-            ICON_SOURCE="reburger.ico"
+          if [ -f "docs/reburger_logo.png" ]; then
+            ICON_SOURCE="docs/reburger_logo.png"
           fi
 
           if [ -n "$ICON_SOURCE" ]; then
-            cp "$ICON_SOURCE" "${APPDIR_PATH}/usr/share/icons/hicolor/128x128/apps/${LOWER_APP_NAME}.png" # Convert/copy to .png
+            cp "$ICON_SOURCE" "${APPDIR_PATH}/usr/share/icons/hicolor/256x256/apps/${LOWER_APP_NAME}.png" # Convert/copy to .png
           else
             echo "Warning: No icon found for AppImage."
           fi
@@ -112,7 +110,7 @@ jobs:
           # Run linuxdeploy
           # The executable from PyInstaller is at 'dist/Repo Save Manager'
           # The --appimage-extract-and-run is important for AppImage-based tools
-          APPIMAGE_EXTRACT_AND_RUN=1 linuxdeploy --appdir "${APPDIR_PATH}"            -e "dist/Repo Save Manager"            -d "${APPDIR_PATH}/usr/share/applications/${LOWER_APP_NAME}.desktop"            -i "${APPDIR_PATH}/usr/share/icons/hicolor/128x128/apps/${LOWER_APP_NAME}.png"            --output appimage
+          APPIMAGE_EXTRACT_AND_RUN=1 linuxdeploy --appdir "${APPDIR_PATH}"            -e "dist/Repo Save Manager"            -d "${APPDIR_PATH}/usr/share/applications/${LOWER_APP_NAME}.desktop"            -i "${APPDIR_PATH}/usr/share/icons/hicolor/256x256/apps/${LOWER_APP_NAME}.png"            --output appimage
 
           # appimagetool will be called by linuxdeploy if --output appimage is used and appimagetool is found
           # If not, one might need to call it explicitly:

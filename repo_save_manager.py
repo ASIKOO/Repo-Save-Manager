@@ -2,21 +2,22 @@ import sys
 import os
 import shutil
 import json
-import subprocess
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QLabel, QMessageBox, 
                             QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
                             QStyledItemDelegate, QAbstractItemView, QInputDialog,
                             QFrame, QComboBox, QDialog, QScrollArea, QTabWidget,
-                            QTextEdit, QMenuBar, QCheckBox, QGroupBox)
-from PyQt6.QtCore import Qt, QSize, QRegularExpression
-from PyQt6.QtGui import QFont, QIcon, QSyntaxHighlighter, QTextCharFormat, QColor, QPixmap, QImage
+                            QTextEdit, QMenuBar, QCheckBox, QGroupBox, QFileDialog)
+from PyQt6.QtCore import Qt, QSize, QRegularExpression, QUrl, pyqtSignal
+from PyQt6.QtGui import QFont, QIcon, QSyntaxHighlighter, QTextCharFormat, QColor, QPixmap, QImage, QDesktopServices
 import requests
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import io
-import platform # Added platform import
+import platform
+from lib.linux_paths import find_linux_saves, xdg_path
+from lib.import_save import import_es3
 
 # Get the application directory for resource paths
 def get_application_path():
@@ -41,11 +42,50 @@ if sys.platform == "win32":
 APP_ICON_PATH = os.path.join(get_application_path(), "reburger.ico")
 
 # --- PFP Caching Setup --- 
-CACHE_DIR = Path.home() / ".cache" / "RepoSaveManager"
+CACHE_DIR = xdg_path("XDG_CACHE_HOME", Path.home() / ".cache") / "RepoSaveManager"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_PFP_SIZE = 32 # Size for PFPs in pixels
 
 # --- Custom ComboBox Class for Proper Display ---
+class BackupTable(QTableWidget):
+    files_dropped = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+        self.setDragDropOverwriteMode(False)
+
+    @staticmethod
+    def dropped_files(event):
+        urls = event.mimeData().urls()
+        if not urls or not all(url.isLocalFile() for url in urls):
+            return []
+        paths = list(dict.fromkeys(url.toLocalFile() for url in urls))
+        return paths if all(Path(path).is_file() and Path(path).suffix.lower() == '.es3'
+                            for path in paths) else []
+
+    def dragEnterEvent(self, event):
+        self.dragMoveEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self.dropped_files(event) and event.possibleActions() & Qt.DropAction.CopyAction:
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        paths = self.dropped_files(event)
+        if not paths or not event.possibleActions() & Qt.DropAction.CopyAction:
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        self.files_dropped.emit(paths)
+
+
 class CustomComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -602,6 +642,16 @@ class SettingsDialog(QDialog):
         save_group = QGroupBox("Save System Settings")
         save_layout = QVBoxLayout(save_group)
         
+        save_layout.addWidget(QLabel("Game saves folder (leave empty for automatic detection):"))
+        path_row = QHBoxLayout()
+        self.save_folder = QLineEdit(self.settings.get("game_saves_path", ""))
+        self.save_folder.setPlaceholderText(str(getattr(self.parent(), "detected_saves_path", "")))
+        path_row.addWidget(self.save_folder)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self.browse_save_folder)
+        path_row.addWidget(browse)
+        save_layout.addLayout(path_row)
+
         # Live Edits Toggle
         self.live_edits_checkbox = QCheckBox("Enable Live Edits (Experimental)")
         self.live_edits_checkbox.setToolTip(
@@ -655,9 +705,15 @@ class SettingsDialog(QDialog):
         self.show_backup_checkbox.setChecked(self.settings.get("show_backup_saves", True))
         self.show_ingame_checkbox.setChecked(self.settings.get("show_in_game_saves", True))
 
+    def browse_save_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select R.E.P.O. saves folder", self.save_folder.text())
+        if folder:
+            self.save_folder.setText(folder)
+
     def get_settings(self):
         """Get the current settings from the dialog"""
         return {
+            "game_saves_path": self.save_folder.text().strip(),
             "live_edits_enabled": self.live_edits_checkbox.isChecked(),
             "show_backup_saves": self.show_backup_checkbox.isChecked(),
             "show_in_game_saves": self.show_ingame_checkbox.isChecked()
@@ -684,6 +740,8 @@ class RepoSaveManager(QMainWindow):
         
         # Initialize settings AFTER paths are set
         self.settings = self.load_settings()
+        self.detected_saves_path = self.repo_saves_path
+        self.apply_save_path()
 
         # Central Widget and Main Layout must be defined before adding other widgets
         main_widget = QWidget()
@@ -732,11 +790,8 @@ class RepoSaveManager(QMainWindow):
             self.repo_saves_path = local_low_path / "semiwork" / "Repo" / "saves" # Game files remain absolute
 
         elif system == "Linux":
-            self.repo_saves_path = Path.home() / ".steam" / "debian-installation" / "steamapps" / "compatdata" / "3241660" / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "LocalLow" / "semiwork" / "Repo" / "saves"
-            self.app_data_dir = Path.home() / ".local" / "share" / "RepoSaveManager"
-            # CACHE_DIR is already defined globally and is XDG compliant for Linux: Path.home() / ".cache" / "RepoSaveManager"
-            print(f"[DEBUG Paths] Application data directory (Linux): {self.app_data_dir}")
-            print(f"[DEBUG Paths] Repo saves path (Linux): {self.repo_saves_path}")
+            self.repo_saves_path = find_linux_saves()
+            self.app_data_dir = xdg_path("XDG_DATA_HOME", Path.home() / ".local/share") / "RepoSaveManager"
 
         else:
             # Fallback for other OSes - you might want to raise an error or use a default
@@ -758,6 +813,10 @@ class RepoSaveManager(QMainWindow):
         self.backup_path.mkdir(parents=True, exist_ok=True)
         print(f"[DEBUG Paths] Ensuring editor path exists: {self.editor_path}")
         self.editor_path.mkdir(parents=True, exist_ok=True)
+
+    def apply_save_path(self):
+        custom = self.settings.get("game_saves_path", "")
+        self.repo_saves_path = Path(custom).expanduser().resolve() if custom else self.detected_saves_path
 
     def load_settings(self):
         """Load application settings from file"""
@@ -813,6 +872,7 @@ class RepoSaveManager(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # Update settings with new values
             self.settings = dialog.get_settings()
+            self.apply_save_path()
             self.save_settings()
             # Refresh the save list to reflect any changes
             self.refresh_save_list()
@@ -1096,7 +1156,11 @@ class RepoSaveManager(QMainWindow):
         table_label.setFont(QFont("SF Pro Text", 16, QFont.Weight.Bold))
         self.layout.addWidget(table_label)
         
-        self.save_table = QTableWidget()
+        drop_hint = QLabel("Drag and drop .es3 files here to import backups")
+        self.layout.addWidget(drop_hint)
+        self.save_table = BackupTable()
+        self.save_table.setToolTip("Drop one or more .es3 files to import. Original files are kept.")
+        self.save_table.files_dropped.connect(self.import_save_files)
         # Columns: Save Name, Type, Players, Notes, Day, Last Modified
         self.save_table.setColumnCount(6) 
         self.save_table.setHorizontalHeaderLabels(["Save Name", "Type", "Players", "Notes", "Day", "Last Modified"])
@@ -1152,6 +1216,33 @@ class RepoSaveManager(QMainWindow):
         self.open_folder_btn.clicked.connect(self.open_save_folder)
         self.save_table.itemChanged.connect(self.on_description_changed)
         self.save_table.selectionModel().selectionChanged.connect(self.on_selection_changed)
+
+    def import_save_files(self, paths):
+        imported = []
+        errors = []
+        for path in paths:
+            try:
+                destination = import_es3(path, self.backup_path)
+                imported.append(destination.name)
+                self.descriptions[destination.name] = f"Imported from {Path(path).name}"
+            except (OSError, ValueError) as error:
+                errors.append(f"{Path(path).name}: {error}")
+        if imported:
+            self.save_descriptions()
+            if not self.settings.get("show_backup_saves", True):
+                self.settings["show_backup_saves"] = True
+                self.save_settings()
+            self.refresh_save_list()
+            for row in range(self.save_table.rowCount()):
+                if self.save_table.item(row, 0).text() == imported[-1]:
+                    self.save_table.selectRow(row)
+                    self.save_table.scrollToItem(self.save_table.item(row, 0))
+                    break
+            self.update_button_states()
+            self.statusBar().showMessage(f"Imported {len(imported)} backup(s). Original files kept.", 10000)
+        if errors:
+            QMessageBox.warning(self, "Import results",
+                                f"Imported {len(imported)} backup(s).\n\n" + "\n".join(errors))
 
     def on_selection_changed(self, selected, deselected):
         self.update_button_states()
@@ -1641,7 +1732,8 @@ class RepoSaveManager(QMainWindow):
 
     def open_save_folder(self):
         try:
-            subprocess.Popen(f'explorer "{self.backup_path}"')
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.backup_path))):
+                raise RuntimeError("The desktop could not open the folder")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open save folder: {str(e)}")
 
