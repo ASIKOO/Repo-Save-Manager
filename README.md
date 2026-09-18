@@ -79,6 +79,10 @@
 3. Select the save you want to back up from the dropdown
 4. Click "Backup" to confirm
 
+Both standalone `REPO_SAVE_*.es3` files and legacy `REPO_SAVE_*` folders are
+supported. Backups use folders internally; restoring preserves the existing
+game save layout.
+
 ### Restoring Saves
 
 1. Select a save from your backup list

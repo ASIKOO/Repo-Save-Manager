@@ -2,6 +2,7 @@
 import os
 import re
 from pathlib import Path
+from lib.save_paths import game_saves
 
 SAVE_SUFFIX = Path('steamapps/compatdata/3241660/pfx/drive_c/users/steamuser/AppData/LocalLow/semiwork/Repo/saves')
 
@@ -39,7 +40,7 @@ def find_linux_saves():
     # Prefer a library that actually contains saves over an empty prefix.
     for path in candidates:
         try:
-            if path.is_dir() and any(path.iterdir()):
+            if game_saves(path):
                 return path
         except OSError:
             continue

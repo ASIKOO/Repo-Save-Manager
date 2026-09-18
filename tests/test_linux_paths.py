@@ -24,7 +24,8 @@ class LinuxPathsTests(unittest.TestCase):
         external = self.home / 'Games Disk'
         saves = external / SAVE_SUFFIX
         saves.mkdir(parents=True)
-        (saves / 'REPO_test').mkdir()
+        (saves / 'REPO_SAVE_test.es3').write_bytes(b'save')
+        (root / SAVE_SUFFIX / 'Player.log').write_text('not a save')
         (root / 'steamapps/libraryfolders.vdf').write_text(
             '"libraryfolders" { "0" { "path" "' + str(external) + '" } }')
         self.assertEqual(find_linux_saves(), saves)

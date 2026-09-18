@@ -18,6 +18,7 @@ import io
 import platform
 from lib.linux_paths import find_linux_saves, xdg_path
 from lib.import_save import import_es3
+from lib.save_paths import game_saves, save_files, copy_to_directory, game_destination, remove_save, restore_save
 
 # Get the application directory for resource paths
 def get_application_path():
@@ -1299,12 +1300,12 @@ class RepoSaveManager(QMainWindow):
                 self.settings.get("live_edits_enabled", False) and 
                 os.path.exists(self.repo_saves_path)):
                 try:
-                    ingame_items = [item for item in os.listdir(self.repo_saves_path) if os.path.isdir(os.path.join(self.repo_saves_path, item)) and item.startswith("REPO_SAVE_")]
+                    ingame_items = game_saves(self.repo_saves_path)
                     for item_name in ingame_items:
                         all_saves.append({
-                            'name': item_name,
+                            'name': item_name.stem if item_name.is_file() else item_name.name,
                             'type': 'In-Game',
-                            'path': os.path.join(self.repo_saves_path, item_name),
+                            'path': str(item_name),
                             'is_backup': False
                         })
                 except Exception as e:
@@ -1345,11 +1346,9 @@ class RepoSaveManager(QMainWindow):
                 
                 try:
                     # Find the .es3 file
-                    for filename in os.listdir(item_path):
-                        if filename.endswith('.es3'):
-                            es3_file_path = os.path.join(item_path, filename)
-                            break
-                    
+                    files = save_files(item_path)
+                    es3_file_path = str(files[0]) if files else None
+
                     if es3_file_path:
                         # Read and decrypt
                         with open(es3_file_path, 'rb') as f:
@@ -1471,11 +1470,11 @@ class RepoSaveManager(QMainWindow):
         
         try:
             # First copy the entire directory
-            shutil.copytree(source_path, dest_path)
+            copy_to_directory(source_path, dest_path)
             
             # Then rename all .es3 files inside to match the new save name
             for file in os.listdir(dest_path):
-                if file.endswith('.es3'):
+                if file.lower().endswith('.es3'):
                     old_path = os.path.join(dest_path, file)
                     new_file = file.replace(save_name, new_save_name)
                     new_path = os.path.join(dest_path, new_file)
@@ -1495,14 +1494,16 @@ class RepoSaveManager(QMainWindow):
             
     def create_backup(self):
         try:
-            # Get all saves from the repo saves folder
-            saves = [f for f in os.listdir(self.repo_saves_path) 
-                    if os.path.isdir(os.path.join(self.repo_saves_path, f)) 
-                    and f.startswith("REPO_SAVE_")]
+            if platform.system() == "Linux" and not self.settings.get("game_saves_path"):
+                self.detected_saves_path = find_linux_saves()
+                self.apply_save_path()
+            saves = [p.name for p in game_saves(self.repo_saves_path)]
             if not saves:
-                QMessageBox.warning(self, "Warning", "No saves found in the game folder")
+                QMessageBox.warning(self, "Warning",
+                                    f"No saves found in:\n{self.repo_saves_path}\n\n"
+                                    "Select your saves folder in Settings → Preferences.")
                 return
-            
+
             # Create dialog with a different approach using QListWidget instead of problematic QComboBox
             dialog = QDialog(self)
             dialog.setWindowTitle("Select Save to Backup")
@@ -1631,12 +1632,13 @@ class RepoSaveManager(QMainWindow):
                 # Get selected save
                 selected_row = list_widget.currentRow()
                 if selected_row == 0:  # "Latest Save"
-                    selected_save = max(saves)
+                    selected_save = max(saves, key=lambda name: (Path(self.repo_saves_path) / name).stat().st_mtime)
                 else:
                     selected_save = list_widget.item(selected_row, 0).text()
                 
                 source_path = os.path.join(self.repo_saves_path, selected_save)
-                dest_path = os.path.join(self.backup_path, selected_save)
+                backup_name = Path(selected_save).stem if Path(source_path).is_file() else selected_save
+                dest_path = os.path.join(self.backup_path, backup_name)
                 
                 if os.path.exists(dest_path):
                     reply = QMessageBox.question(self, "Save Already Exists",
@@ -1646,7 +1648,7 @@ class RepoSaveManager(QMainWindow):
                         return
                     shutil.rmtree(dest_path)
                     
-                shutil.copytree(source_path, dest_path)
+                copy_to_directory(source_path, dest_path)
                 self.refresh_save_list()
                 QMessageBox.information(self, "Success", f"Created backup of {selected_save}")
         except Exception as e:
@@ -1668,17 +1670,17 @@ class RepoSaveManager(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 # Delete the selected save
-                shutil.rmtree(save_info['path'])
+                remove_save(save_info['path'])
                 
                 # If deleting a backup, ask if user wants to delete from game too
                 if save_type == 'Backup':
-                    repo_path = os.path.join(self.repo_saves_path, save_name)
+                    repo_path = game_destination(self.repo_saves_path, save_name)
                     if os.path.exists(repo_path):
                         reply = QMessageBox.question(self, "Delete from Game",
                                                   "Do you also want to delete this save from the game?",
                                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                         if reply == QMessageBox.StandardButton.Yes:
-                            shutil.rmtree(repo_path)
+                            remove_save(repo_path)
                 
                 # If deleting an in-game save, ask if user wants to delete backup too
                 elif save_type == 'In-Game':
@@ -1714,7 +1716,7 @@ class RepoSaveManager(QMainWindow):
             
         try:
             source_path = save_info['path']
-            dest_path = os.path.join(self.repo_saves_path, save_name)
+            dest_path = game_destination(self.repo_saves_path, save_name)
             
             if os.path.exists(dest_path):
                 reply = QMessageBox.question(self, "Confirm Overwrite",
@@ -1722,9 +1724,10 @@ class RepoSaveManager(QMainWindow):
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 if reply == QMessageBox.StandardButton.No:
                     return
-                shutil.rmtree(dest_path)
+                if dest_path.is_dir():
+                    remove_save(dest_path)
                 
-            shutil.copytree(source_path, dest_path)
+            restore_save(source_path, dest_path)
             self.refresh_save_list()  # Refresh to show both backup and in-game versions
             QMessageBox.information(self, "Success", f"Save restored to game successfully")
         except Exception as e:
@@ -1764,12 +1767,12 @@ class RepoSaveManager(QMainWindow):
             # Ensure clean temp directory
             if os.path.exists(temp_save_dir):
                 shutil.rmtree(temp_save_dir)
-            shutil.copytree(save_path, temp_save_dir)
+            copy_to_directory(save_path, temp_save_dir)
 
             # Find the .es3 file within the temp directory
             es3_file_path = None
             for filename in os.listdir(temp_save_dir):
-                if filename.endswith('.es3'):
+                if filename.lower().endswith('.es3'):
                     es3_file_path = os.path.join(temp_save_dir, filename)
                     break
             
@@ -1779,63 +1782,14 @@ class RepoSaveManager(QMainWindow):
             # Determine target save path for live edits
             target_save_path = None
             if live_edits_enabled:
-                # Find the .es3 file in the original save directory
-                for filename in os.listdir(save_path):
-                    if filename.endswith('.es3'):
-                        target_save_path = os.path.join(save_path, filename)
-                        break
-                
-                # If editing a backup and live edits is enabled, target the game directory
-                if save_type == 'Backup':
-                    game_save_path = os.path.join(self.repo_saves_path, save_name)
-                    if os.path.exists(game_save_path):
-                        for filename in os.listdir(game_save_path):
-                            if filename.endswith('.es3'):
-                                target_save_path = os.path.join(game_save_path, filename)
-                                break
-                    else:
-                        # Game save doesn't exist, create it
-                        try:
-                            shutil.copytree(save_path, game_save_path)
-                            for filename in os.listdir(game_save_path):
-                                if filename.endswith('.es3'):
-                                    target_save_path = os.path.join(game_save_path, filename)
-                                    break
-                            
-                            # Check if .es3 file was found in the copied directory
-                            if not target_save_path:
-                                # Clean up the copied directory since it's unusable
-                                if os.path.exists(game_save_path):
-                                    try:
-                                        shutil.rmtree(game_save_path)
-                                    except Exception:
-                                        pass  # Ignore cleanup errors
-                                QMessageBox.critical(self, "Error", 
-                                                   "No .es3 file found in the copied game save directory. Live edits cannot be applied.")
-                                # Clean up temp directory before returning
-                                if os.path.exists(temp_save_dir):
-                                    try:
-                                        shutil.rmtree(temp_save_dir)
-                                    except Exception:
-                                        pass  # Ignore cleanup errors
-                                return  # Exit the method early
-                                
-                        except Exception as copy_error:
-                            # If copy fails, clean up any partial directories and show error
-                            if os.path.exists(game_save_path):
-                                try:
-                                    shutil.rmtree(game_save_path)
-                                except Exception:
-                                    pass  # Ignore cleanup errors
-                            QMessageBox.critical(self, "Error", 
-                                               f"Failed to create game save for live editing: {copy_error}")
-                            # Clean up temp directory before returning
-                            if os.path.exists(temp_save_dir):
-                                try:
-                                    shutil.rmtree(temp_save_dir)
-                                except Exception:
-                                    pass  # Ignore cleanup errors
-                            return  # Exit the method early
+                game_save_path = (game_destination(self.repo_saves_path, save_name)
+                                  if save_type == 'Backup' else Path(save_path))
+                if not game_save_path.exists():
+                    restore_save(save_path, game_save_path)
+                files = save_files(game_save_path)
+                if not files:
+                    raise FileNotFoundError("No .es3 file found in the game save.")
+                target_save_path = str(files[0])
 
             # Open the SaveEditor dialog
             editor_dialog = SaveEditor(es3_file_path, self, live_edits_enabled, target_save_path, save_info) 
@@ -1846,9 +1800,9 @@ class RepoSaveManager(QMainWindow):
                 if not live_edits_enabled:
                     # Traditional workflow - copy back to backup
                     print(f"Copying changes back from {temp_save_dir} to {save_path}")
-                    if os.path.exists(save_path):
-                         shutil.rmtree(save_path) # Remove old save before copying new
-                    shutil.copytree(temp_save_dir, save_path)
+                    if Path(save_path).is_dir():
+                        shutil.rmtree(save_path)
+                    restore_save(temp_save_dir, save_path)
                     QMessageBox.information(self, "Editor", f"Changes saved to {save_type.lower()} save.")
                 else:
                     # Live edits workflow - changes were already applied directly

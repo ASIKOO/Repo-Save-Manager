@@ -103,6 +103,55 @@ class DropIntegrationTests(unittest.TestCase):
         self.assertTrue(window.settings['show_backup_saves'])
         self.assertIn('Dropped save.es3', window.save_table.item(0, 3).text())
 
+    def test_backup_button_and_live_editor_support_standalone_save(self):
+        from PyQt6.QtWidgets import QDialog, QMessageBox
+        from repo_save_manager import RepoSaveManager
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
+            'XDG_DATA_HOME': temporary + '/data',
+        }):
+            game = Path(temporary) / 'game'
+            game.mkdir()
+            name = 'REPO_SAVE_2026_03_27_14_05_47'
+            source = game / (name + '.es3')
+            data = encrypt_es3(json.dumps({
+                'dictionaryOfDictionaries': {'value': {'runStats': {'level': 7}}}
+            }).encode(), SAVE_PASSWORD)
+            source.write_bytes(data)
+            window = RepoSaveManager()
+            self.addCleanup(window.close)
+            window.settings['game_saves_path'] = str(game)
+            window.apply_save_path()
+            with patch('repo_save_manager.QDialog.exec', return_value=QDialog.DialogCode.Accepted), \
+                 patch('repo_save_manager.QMessageBox.information'), \
+                 patch('repo_save_manager.QMessageBox.critical') as error:
+                window.create_backup()
+                error.assert_not_called()
+            backup_file = window.backup_path / name / source.name
+            self.assertEqual(backup_file.read_bytes(), data)
+            self.assertEqual(source.read_bytes(), data)
+            window.save_table.selectRow(0)
+            with patch('repo_save_manager.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes), \
+                 patch('repo_save_manager.QMessageBox.information'), \
+                 patch('repo_save_manager.QMessageBox.critical') as error:
+                window.insert_into_repo()
+                error.assert_not_called()
+            self.assertEqual(source.read_bytes(), data)
+            self.assertFalse((game / name).exists())
+            window.settings['live_edits_enabled'] = True
+            window.refresh_save_list()
+            self.assertEqual(window.save_table.rowCount(), 2)
+            for row in range(2):
+                window.save_table.selectRow(row)
+                with patch('repo_save_manager.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes), \
+                     patch('repo_save_manager.QMessageBox.critical') as error, \
+                     patch('repo_save_manager.SaveEditor') as editor:
+                    editor.return_value.exec.return_value = QDialog.DialogCode.Rejected
+                    window.open_in_editor()
+                    editor.assert_called_once()
+                    self.assertEqual(Path(editor.call_args.args[3]), source)
+                    error.assert_not_called()
+            self.assertEqual(source.read_bytes(), data)
+
     def test_non_save_and_remote_urls_rejected(self):
         from PyQt6.QtCore import QMimeData, QPoint, QUrl, Qt
         from PyQt6.QtGui import QDragEnterEvent
