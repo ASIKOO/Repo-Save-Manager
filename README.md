@@ -83,6 +83,14 @@ Both standalone `REPO_SAVE_*.es3` files and legacy `REPO_SAVE_*` folders are
 supported. Backups use folders internally; restoring preserves the existing
 game save layout.
 
+The **In-Game** rows show the main save file on disk and refresh automatically
+(every three seconds when no dialog or note editor is open). **Refresh** reloads
+it manually. Backup rows remain snapshots; use **Backup Save** again to update
+an existing backup. Game recovery files (`_BACKUP*.es3`) are never selected in
+place of the main save. **Saved level** shows the raw value stored in the file,
+which may differ from the stage currently displayed in the running game.
+Viewing game saves does not require enabling Live Edits.
+
 ### Restoring Saves
 
 1. Select a save from your backup list

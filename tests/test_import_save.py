@@ -61,9 +61,12 @@ class DropIntegrationTests(unittest.TestCase):
         cls.env.start()
         from PyQt6.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
+        cls.game_patch = patch("repo_save_manager.find_linux_saves", return_value=Path(cls.temp.name) / "game")
+        cls.game_patch.start()
 
     @classmethod
     def tearDownClass(cls):
+        cls.game_patch.stop()
         cls.env.stop()
         cls.temp.cleanup()
 
@@ -151,6 +154,39 @@ class DropIntegrationTests(unittest.TestCase):
                     self.assertEqual(Path(editor.call_args.args[3]), source)
                     error.assert_not_called()
             self.assertEqual(source.read_bytes(), data)
+
+    def test_primary_save_refresh_and_editor_ignore_recovery_files(self):
+        from repo_save_manager import RepoSaveManager, SaveEditor
+        from PyQt6.QtCore import Qt
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {'XDG_DATA_HOME': temporary + '/data'}):
+            folder = Path(temporary) / 'game' / 'REPO_SAVE_test'
+            folder.mkdir(parents=True)
+            def payload(level, charge):
+                return encrypt_es3(json.dumps({'dictionaryOfDictionaries': {'value': {
+                    'runStats': {'level': level, 'chargingStationCharge': charge}
+                }}}).encode(), SAVE_PASSWORD)
+            (folder / 'REPO_SAVE_test_BACKUP14.es3').write_bytes(payload(2, 5))
+            primary = folder / 'REPO_SAVE_test.es3'
+            primary.write_bytes(payload(5, 7))
+            window = RepoSaveManager()
+            self.addCleanup(window.close)
+            window.settings['game_saves_path'] = str(folder.parent)
+            window.apply_save_path()
+            window.refresh_save_list()
+            self.assertEqual(window.save_table.rowCount(), 1)
+            self.assertEqual(window.save_table.item(0, 4).text(), '5')
+            window.save_table.selectRow(0)
+            self.assertFalse(window.edit_button.isEnabled())
+            primary.write_bytes(payload(6, 9))
+            window.refresh_if_changed()
+            self.assertEqual(window.save_table.item(0, 4).text(), '6')
+            self.assertEqual(window.get_selected_save_info()['path'], str(folder))
+            from lib.save_paths import save_files
+            editor = SaveEditor(str(save_files(folder)[0]), window)
+            self.addCleanup(editor.close)
+            self.assertEqual(editor.level_entry.text(), '6')
+            self.assertEqual(editor.charging_entry.text(), '9')
+            self.assertFalse(window.descriptions_file.exists())
 
     def test_non_save_and_remote_urls_rejected(self):
         from PyQt6.QtCore import QMimeData, QPoint, QUrl, Qt

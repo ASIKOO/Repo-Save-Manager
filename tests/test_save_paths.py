@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from lib.save_paths import game_saves, copy_to_directory, game_destination, restore_save
+from lib.save_paths import game_saves, copy_to_directory, game_destination, restore_save, save_files
 
 
 class SaveLayoutTests(unittest.TestCase):
@@ -30,3 +30,16 @@ class SaveLayoutTests(unittest.TestCase):
                 self.assertEqual(restored.read_bytes(), b'original')
                 original = source if loose else source / (name + '.es3')
                 self.assertEqual(original.read_bytes(), b'original')
+
+    def test_primary_preferred_even_when_recovery_is_newer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'REPO_SAVE_test'
+            folder.mkdir()
+            primary = folder / 'REPO_SAVE_test.es3'
+            primary.write_bytes(b'current')
+            recovery = folder / 'REPO_SAVE_test_BACKUP14.es3'
+            recovery.write_bytes(b'old data')
+            self.assertEqual(save_files(folder), [primary])
+            primary.unlink()
+            with self.assertRaises(ValueError):
+                save_files(folder)

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QStyledItemDelegate, QAbstractItemView, QInputDialog,
                             QFrame, QComboBox, QDialog, QScrollArea, QTabWidget,
                             QTextEdit, QMenuBar, QCheckBox, QGroupBox, QFileDialog)
-from PyQt6.QtCore import Qt, QSize, QRegularExpression, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QRegularExpression, QUrl, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QIcon, QSyntaxHighlighter, QTextCharFormat, QColor, QPixmap, QImage, QDesktopServices
 import requests
 import xml.etree.ElementTree as ET
@@ -18,7 +18,7 @@ import io
 import platform
 from lib.linux_paths import find_linux_saves, xdg_path
 from lib.import_save import import_es3
-from lib.save_paths import game_saves, save_files, copy_to_directory, game_destination, remove_save, restore_save
+from lib.save_paths import game_saves, save_files, copy_to_directory, game_destination, remove_save, restore_save, save_modified
 
 # Get the application directory for resource paths
 def get_application_path():
@@ -265,7 +265,8 @@ class SaveEditor(QDialog):
     def create_world_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        self.level_entry = self.create_entry("Level:", layout)
+        self.level_entry = self.create_entry("Saved level (raw):", layout)
+        self.level_entry.setToolTip("Value stored in the save file; may differ from the current stage shown in game.")
         self.currency_entry = self.create_entry("Currency:", layout)
         self.lives_entry = self.create_entry("Lives:", layout)
         self.charging_entry = self.create_entry("Charging Station Charge:", layout)
@@ -676,11 +677,11 @@ class SettingsDialog(QDialog):
         display_layout.addWidget(self.show_backup_checkbox)
         
         self.show_ingame_checkbox = QCheckBox("Show In-Game Saves")
-        self.show_ingame_checkbox.setToolTip("Show in-game saves in the save list\n(Only shown when Live Edits is enabled)")
+        self.show_ingame_checkbox.setToolTip("Show the latest saves written by the game")
         display_layout.addWidget(self.show_ingame_checkbox)
         
         # Add note about the dependency
-        note_label = QLabel("Note: In-game saves are only visible when Live Edits is enabled")
+        note_label = QLabel("Game saves can be viewed without enabling Live Edits.")
         note_label.setStyleSheet("color: #666666; font-size: 11px; font-style: italic;")
         note_label.setWordWrap(True)
         display_layout.addWidget(note_label)
@@ -759,6 +760,10 @@ class RepoSaveManager(QMainWindow):
         # Initial refresh
         self.refresh_save_list()
         self.update_button_states() # Set initial button states
+        self._save_signature = self.save_signature()
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.refresh_if_changed)
+        self.refresh_timer.start(3000)
 
     def setup_paths(self):
         system = platform.system()
@@ -1143,6 +1148,9 @@ class RepoSaveManager(QMainWindow):
         quick_actions_layout.addWidget(self.backup_btn)
         quick_actions_layout.addWidget(self.restore_btn)
         quick_actions_layout.addWidget(self.open_folder_btn)
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh_save_list)
+        quick_actions_layout.addWidget(self.refresh_btn)
         self.layout.addLayout(quick_actions_layout)
         
         # --- Separator --- 
@@ -1153,18 +1161,21 @@ class RepoSaveManager(QMainWindow):
         self.layout.addWidget(separator)
         
         # --- Save table --- 
-        table_label = QLabel("Your Saved Backups")
+        table_label = QLabel("Your Saved Backups & Game Saves")
         table_label.setFont(QFont("SF Pro Text", 16, QFont.Weight.Bold))
         self.layout.addWidget(table_label)
         
         drop_hint = QLabel("Drag and drop .es3 files here to import backups")
         self.layout.addWidget(drop_hint)
+        freshness_hint = QLabel("Backup = saved snapshot · In-Game = latest file on disk (refreshes automatically)")
+        freshness_hint.setWordWrap(True)
+        self.layout.addWidget(freshness_hint)
         self.save_table = BackupTable()
         self.save_table.setToolTip("Drop one or more .es3 files to import. Original files are kept.")
         self.save_table.files_dropped.connect(self.import_save_files)
         # Columns: Save Name, Type, Players, Notes, Day, Last Modified
         self.save_table.setColumnCount(6) 
-        self.save_table.setHorizontalHeaderLabels(["Save Name", "Type", "Players", "Notes", "Day", "Last Modified"])
+        self.save_table.setHorizontalHeaderLabels(["Save Name", "Type", "Players", "Notes", "Saved level", "Last Saved"])
         # Make columns resizable by user
         self.save_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         # Set initial column widths but allow resizing
@@ -1251,7 +1262,8 @@ class RepoSaveManager(QMainWindow):
     def update_button_states(self):
         has_selection = len(self.save_table.selectedItems()) > 0
         self.restore_btn.setEnabled(has_selection)
-        self.edit_button.setEnabled(has_selection)
+        selected = self.get_selected_save_info()
+        self.edit_button.setEnabled(has_selection and (selected["is_backup"] or self.settings.get("live_edits_enabled", False)))
         self.duplicate_btn.setEnabled(has_selection)
         self.delete_btn.setEnabled(has_selection)
 
@@ -1273,7 +1285,42 @@ class RepoSaveManager(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save descriptions: {str(e)}")
 
+    def save_signature(self):
+        entries = []
+        for root in (self.repo_saves_path, self.backup_path):
+            try:
+                for save in game_saves(root):
+                    for file in save_files(save):
+                        stat = file.stat()
+                        entries.append((str(file), stat.st_mtime_ns, stat.st_size))
+            except (OSError, ValueError):
+                entries.append((str(root), None, None))
+        return sorted(entries, key=lambda item: item[0])
+
+    def refresh_if_changed(self):
+        if QApplication.activeModalWidget() or self.save_table.state() == QAbstractItemView.State.EditingState:
+            return
+        signature = self.save_signature()
+        if signature != self._save_signature:
+            self.refresh_save_list()
+
     def refresh_save_list(self):
+        selected = self.get_selected_save_info()
+        blocked = self.save_table.blockSignals(True)
+        try:
+            self._populate_save_list()
+            if selected:
+                for row in range(self.save_table.rowCount()):
+                    info = self.save_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                    if info['path'] == selected['path']:
+                        self.save_table.selectRow(row)
+                        break
+        finally:
+            self.save_table.blockSignals(blocked)
+        self.update_button_states()
+        self._save_signature = self.save_signature()
+
+    def _populate_save_list(self):
         """Refresh the table with current saves and extracted info (incl PFPs)"""
         self.save_table.setRowCount(0)
         self.save_table.clearContents() # Clear widgets too
@@ -1295,9 +1342,8 @@ class RepoSaveManager(QMainWindow):
                     })
             
             # Add in-game saves if enabled and live edits is enabled
-            # Hide in-game saves when live edits is disabled as they cannot be safely edited
+            # Viewing game saves does not require permission to edit them.
             if (self.settings.get("show_in_game_saves", True) and 
-                self.settings.get("live_edits_enabled", False) and 
                 os.path.exists(self.repo_saves_path)):
                 try:
                     ingame_items = game_saves(self.repo_saves_path)
@@ -1324,6 +1370,7 @@ class RepoSaveManager(QMainWindow):
                 name_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter) # Center vertically
                 # Store save info as user data for later use
                 name_item.setData(Qt.ItemDataRole.UserRole, save_info)
+                name_item.setToolTip(str(save_info["path"]))
                 self.save_table.setItem(row, 0, name_item)
                 
                 # --- Column 1: Type --- 
@@ -1407,6 +1454,7 @@ class RepoSaveManager(QMainWindow):
                 
                 # --- Column 4: Day --- 
                 day_item = QTableWidgetItem(day_str)
+                day_item.setToolTip("Raw level in the saved file; not live game memory.")
                 day_item.setFlags(day_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 day_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter) # Center vertically AND horizontally
                 self.save_table.setItem(row, 4, day_item) # Set item at column 4
@@ -1414,9 +1462,9 @@ class RepoSaveManager(QMainWindow):
                 # --- Column 5: Last Modified --- 
                 try:
                     # Get the last modified time of the directory
-                    last_mod_time = os.path.getmtime(item_path)
+                    last_mod_time = save_modified(item_path)
                     last_mod_datetime = datetime.fromtimestamp(last_mod_time)
-                    last_mod_str = last_mod_datetime.strftime("%Y-%m-%d %H:%M")
+                    last_mod_str = last_mod_datetime.strftime("%Y-%m-%d %H:%M:%S")
                 except Exception as e:
                     print(f"Error getting modification time for {item_path}: {e}")
                     last_mod_str = "Unknown"
@@ -1632,7 +1680,7 @@ class RepoSaveManager(QMainWindow):
                 # Get selected save
                 selected_row = list_widget.currentRow()
                 if selected_row == 0:  # "Latest Save"
-                    selected_save = max(saves, key=lambda name: (Path(self.repo_saves_path) / name).stat().st_mtime)
+                    selected_save = max(saves, key=lambda name: save_modified(Path(self.repo_saves_path) / name))
                 else:
                     selected_save = list_widget.item(selected_row, 0).text()
                 
@@ -1752,6 +1800,10 @@ class RepoSaveManager(QMainWindow):
         save_path = save_info['path']
         live_edits_enabled = self.settings.get("live_edits_enabled", False)
         
+        if save_type == "In-Game" and not live_edits_enabled:
+            QMessageBox.information(self, "Live Edits disabled", "Create a backup to edit, or enable Live Edits in Preferences.")
+            return
+
         # Show warning for live edits if enabled
         if live_edits_enabled:
             reply = QMessageBox.question(self, "Live Edits Warning", 
@@ -1769,15 +1821,10 @@ class RepoSaveManager(QMainWindow):
                 shutil.rmtree(temp_save_dir)
             copy_to_directory(save_path, temp_save_dir)
 
-            # Find the .es3 file within the temp directory
-            es3_file_path = None
-            for filename in os.listdir(temp_save_dir):
-                if filename.lower().endswith('.es3'):
-                    es3_file_path = os.path.join(temp_save_dir, filename)
-                    break
-            
-            if not es3_file_path:
-                raise FileNotFoundError("No .es3 file found in the temporary save directory.")
+            files = save_files(temp_save_dir)
+            if not files:
+                raise FileNotFoundError("No main .es3 file found in the save.")
+            es3_file_path = str(files[0])
 
             # Determine target save path for live edits
             target_save_path = None

@@ -1,6 +1,7 @@
 """Support both standalone ES3 files and legacy save directories."""
 from pathlib import Path
 import shutil
+import re
 
 
 def game_saves(root):
@@ -13,8 +14,22 @@ def game_saves(root):
 
 def save_files(path):
     path = Path(path)
-    return [path] if path.is_file() else [p for p in path.iterdir()
-                                        if p.is_file() and p.suffix.lower() == '.es3']
+    if path.is_file():
+        return [path]
+    files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() == '.es3']
+    # The canonical save is authoritative; recovery files may have newer mtimes.
+    primary = next((p for p in files if p.stem == path.name), None)
+    if primary:
+        return [primary]
+    active = [p for p in files if not re.search(r'_BACKUP\d+$', p.stem, re.IGNORECASE)]
+    if len(active) == 1:
+        return active
+    raise ValueError(f'Cannot identify the main save in {path.name}; recovery files are not selected automatically.')
+
+
+def save_modified(path):
+    files = save_files(path)
+    return files[0].stat().st_mtime
 
 
 def copy_to_directory(source, destination):
