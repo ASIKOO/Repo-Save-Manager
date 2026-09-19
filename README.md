@@ -79,11 +79,31 @@
 3. Select the save you want to back up from the dropdown
 4. Click "Backup" to confirm
 
+Both standalone `REPO_SAVE_*.es3` files and legacy `REPO_SAVE_*` folders are
+supported. Backups use folders internally; restoring preserves the existing
+game save layout.
+
+The **In-Game** rows show the main save file on disk and refresh automatically
+(every three seconds when no dialog or note editor is open). **Refresh** reloads
+it manually. Backup rows remain snapshots; use **Backup Save** again to update
+an existing backup. Game recovery files (`_BACKUP*.es3`) are never selected in
+place of the main save. **Saved level** shows the raw value stored in the file,
+which may differ from the stage currently displayed in the running game.
+Viewing game saves does not require enabling Live Edits.
+
 ### Restoring Saves
 
 1. Select a save from your backup list
 2. Click "⬆️ Restore Selected Save"
 3. Confirm the action when prompted
+
+### Importing `.es3` Files
+
+Drag one or more local `.es3` save files from your file manager onto the table
+under **Your Saved Backups**. Valid R.E.P.O. saves appear as new backups and can
+be edited or restored using the existing buttons. Original files and existing
+backups are kept; repeated imports create separate backups. Unreadable or
+incompatible saves are reported without preventing other valid files from importing.
 
 ### Editing Saves
 
@@ -104,18 +124,41 @@
 
 ## 🐧 Linux Support
 
-The Repo Save Manager now officially supports Linux!
+The manager runs as a native Linux Qt application; Wine is not required for
+this application. R.E.P.O. saves are read from the game's Steam/Proton prefix.
 
-- **Game Save Path (Proton/Steam):** When running R.E.P.O. through Proton on Linux, the game saves are typically located at:
-  `~/.steam/debian-installation/steamapps/compatdata/3241660/pfx/drive_c/users/steamuser/AppData/LocalLow/semiwork/Repo/saves`
+### Run from source
 
-- **Application Data:** Your backups, custom descriptions, and temporary editor files are stored in:
-  `~/.local/share/RepoSaveManager`
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python repo_save_manager.py
+```
 
-- **Cache:** Steam profile pictures and other cached data are stored in:
-  `~/.cache/RepoSaveManager`
+Steam installations in the standard Linux, Debian, Flatpak, and Snap locations
+are detected, including additional libraries listed in `libraryfolders.vdf`.
+If detection selects the wrong library, use **Settings → Preferences → Browse**
+to select the game's `saves` directory. Clear that field to restore detection.
 
-Please ensure these paths are accessible and that the application has the necessary permissions.
+Backups and settings use `$XDG_DATA_HOME/RepoSaveManager` (default:
+`~/.local/share/RepoSaveManager`). Profile pictures use
+`$XDG_CACHE_HOME/RepoSaveManager` (default: `~/.cache/RepoSaveManager`).
+
+### Build a native executable
+
+Run the build on Linux, from the repository directory:
+
+```bash
+python build.py
+"./dist/Repo Save Manager"
+```
+
+The executable bundles Python and application dependencies. If `dpkg-deb` is
+available, the build also generates a `.deb` with a desktop launcher. Other
+distributions can use the executable directly. Qt still requires system graphics
+libraries; build on the oldest Linux distribution you intend to support.
+AppImage packaging is handled separately by the release workflow.
 
 ## 🔧 Technical Details
 

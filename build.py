@@ -86,9 +86,9 @@ def run_pyinstaller():
     current_os = platform.system()
     
     icon_path_windows = "reburger.ico"
-    icon_path_linux = "reburger.png" # Prefer .png for Linux
+    icon_path_linux = "docs/reburger_logo.png" # Prefer .png for Linux
 
-    cmd = ["pyinstaller", "--onefile", "--name=Repo Save Manager", "--clean", "--noconfirm", "--hidden-import=pycryptodome"]
+    cmd = [sys.executable, "-m", "PyInstaller", "--onefile", "--name=Repo Save Manager", "--clean", "--noconfirm", "--collect-submodules=Crypto"]
 
     if current_os == "Windows":
         version_file = create_version_info()
@@ -101,7 +101,7 @@ def run_pyinstaller():
 
         cmd.extend(["--windowed", f"--version-file={version_file}"])
         if icon_to_use:
-            cmd.extend([f"--icon={icon_to_use}", "--add-data", f"{icon_to_use};."])
+            cmd.extend([f"--icon={icon_to_use}", "--add-data", f"{icon_to_use}{os.pathsep}."])
 
     elif current_os == "Linux":
         if os.path.exists(icon_path_linux):
@@ -115,12 +115,13 @@ def run_pyinstaller():
             icon_to_use = None
 
         if icon_to_use:
-             cmd.extend([f"--icon={icon_to_use}", "--add-data", f"{icon_to_use};."])
+             cmd.extend([f"--icon={icon_to_use}", "--add-data", f"{icon_to_use}{os.pathsep}."])
     
+    cmd.extend(["--add-data", f"reburger.ico{os.pathsep}."])
     cmd.append("repo_save_manager.py")
 
     if os.path.exists("lib"):
-        cmd.extend(["--add-data", "lib:lib"])
+        cmd.extend(["--add-data", f"lib{os.pathsep}lib"])
 
     print(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -158,11 +159,10 @@ def create_deb_package(version_tag):
     desktop_entry_dir = os.path.join(package_build_dir, "usr", "share", "applications")
 
     # Determine icon path and name
-    icon_source_linux = "reburger.png"
-    icon_source_fallback = "reburger.ico"
+    icon_source_linux = "docs/reburger_logo.png"
     app_icon_name_in_package = f"{app_name}.png" # Standardize to .png in package
 
-    icon_install_path_str = "usr/share/icons/hicolor/128x128/apps" # Relative path for .desktop
+    icon_install_path_str = "usr/share/icons/hicolor/256x256/apps" # Relative path for .desktop
     icon_install_dir_abs = os.path.join(package_build_dir, icon_install_path_str)
 
 
@@ -180,7 +180,7 @@ Architecture: {arch}
 Maintainer: SemiWork <dev@example.com>
 Description: Repo Save Manager - A tool to manage repository saves.
  This package contains the Repo Save Manager application.
-Depends: python3, python3-pyqt6, libgl1, libxkbcommon-x11-0, libxcb-cursor0, libxcb-randr0, libxcb-image0, libxcb-icccm4, libxcb-keysyms1, libxcb-render-util0
+Depends: libgl1, libxkbcommon-x11-0, libxcb-cursor0, libxcb-randr0, libxcb-image0, libxcb-icccm4, libxcb-keysyms1, libxcb-render-util0
 """ # Added more common Qt/XCB deps
     with open(os.path.join(debian_dir, "control"), "w", encoding="utf-8") as f:
         f.write(control_content)
@@ -190,7 +190,7 @@ Depends: python3, python3-pyqt6, libgl1, libxkbcommon-x11-0, libxcb-cursor0, lib
 
     launcher_path = os.path.join(usr_bin_dir, app_name)
     launcher_content = f"""#!/bin/sh
-/opt/{app_name}/RepoSaveManager "$@"
+exec /opt/{app_name}/RepoSaveManager "$@"
 """
     with open(launcher_path, "w", encoding="utf-8") as f:
         f.write(launcher_content)
@@ -199,9 +199,6 @@ Depends: python3, python3-pyqt6, libgl1, libxkbcommon-x11-0, libxcb-cursor0, lib
     actual_icon_source = None
     if os.path.exists(icon_source_linux):
         actual_icon_source = icon_source_linux
-    elif os.path.exists(icon_source_fallback):
-        actual_icon_source = icon_source_fallback
-        print(f"Warning: Using fallback icon {icon_source_fallback} for .deb package.")
 
     if actual_icon_source:
         shutil.copy(actual_icon_source, os.path.join(icon_install_dir_abs, app_icon_name_in_package))
@@ -226,7 +223,7 @@ Categories=Utility;Development;
     deb_file_path = os.path.join("dist", f"{package_name_versioned}.deb")
     print(f"Building .deb package: {package_build_dir} -> {deb_file_path}")
     try:
-        subprocess.run(["dpkg-deb", "--build", package_build_dir, deb_file_path], check=True)
+        subprocess.run(["dpkg-deb", "--root-owner-group", "--build", package_build_dir, deb_file_path], check=True)
         print(f".deb package created successfully: {deb_file_path}")
         return deb_file_path
     except subprocess.CalledProcessError as e:
@@ -277,13 +274,16 @@ def main():
 
     current_os = platform.system()
 
-    clean_build_directories()
+    # Preserve existing artifacts, including Windows builds.
+    os.makedirs("dist", exist_ok=True)
     run_pyinstaller()
     verify_executable() # Verify after pyinstaller, before OS-specific packaging
 
     if current_os == "Linux":
         print("\nStarting Linux-specific packaging...")
-        deb_file = create_deb_package(version_tag)
+        deb_file = create_deb_package(version_tag) if shutil.which("dpkg-deb") else None
+        if not deb_file:
+            print("dpkg-deb unavailable; native portable executable is ready.")
         appimage_input_executable = prepare_for_appimage() # This just verifies exe and prints path
         print("\nLinux packaging completed.")
         if deb_file: # create_deb_package returns path or None
